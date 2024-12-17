@@ -7,11 +7,21 @@ sudo apt-get -y install cuda-toolkit-12-6
 # Instalacionde driver nvidia
 sudo apt-get install -y nvidia-open
 
+# Instalar tensor RT, debian
+https://developer.nvidia.com/tensorrt/download
+
+pip install tensorrt-cu12 tensorrt-lean-cu12
+
 # Inferencia de imagen con modelo 365 y objetos
-python tools/inference/torch_inf.py -c configs/dfine/objects365/dfine_hgnetv2_s_obj365.yml -r dfine_s_obj365.pth --input test.jpg
- --device cuda:0
+python tools/inference/torch_inf.py -c configs/dfine/objects365/dfine_hgnetv2_s_obj365.yml -r dfine_s_obj365.pth --input test.jpg --device cuda:0
 
  # Entrenamiento
 python train.py -c configs/dfine/dfine_hgnetv2_s_coco.yml --use-amp --seed=0
 
 torchrun --nproc_per_node=1 train.py -c configs/dfine/dfine_hgnetv2_s_coco.yml --use-amp --seed=0
+
+# ENTRANAMIENTO FUNCIONAL
+python train.py -c configs/dfine/dfine_hgnetv2_s_coco.yml --seed=0
+
+# conversor de pth a onnx
+python tools/deployment/export_onnx.py --check -c configs/dfine/objects365/dfine_hgnetv2_s_obj365.yml -r dfine_s_obj365.pth
