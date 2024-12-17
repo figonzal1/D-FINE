@@ -1,0 +1,17 @@
+# Instalacion de cuda con debian 12
+wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.debsudo add-apt-repository contrib
+sudo apt-get update
+sudo apt-get -y install cuda-toolkit-12-6
+
+# Instalacionde driver nvidia
+sudo apt-get install -y nvidia-open
+
+# Inferencia de imagen con modelo 365 y objetos
+python tools/inference/torch_inf.py -c configs/dfine/objects365/dfine_hgnetv2_s_obj365.yml -r dfine_s_obj365.pth --input test.jpg
+ --device cuda:0
+
+ # Entrenamiento
+python train.py -c configs/dfine/dfine_hgnetv2_s_coco.yml --use-amp --seed=0
+
+torchrun --nproc_per_node=1 train.py -c configs/dfine/dfine_hgnetv2_s_coco.yml --use-amp --seed=0
