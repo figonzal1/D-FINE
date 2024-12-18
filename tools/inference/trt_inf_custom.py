@@ -8,6 +8,8 @@ from PIL import Image, ImageDraw
 
 import torch
 import torchvision.transforms as T
+import torchvision.ops as ops
+
 
 import tensorrt as trt
 import cv2  # Added for video processing
@@ -44,7 +46,11 @@ class TRTInference(object):
         self.logger = trt.Logger(
             trt.Logger.VERBOSE) if verbose else trt.Logger(trt.Logger.INFO)
 
-        self.engine = self.load_engine(engine_path)
+        try:
+            self.engine = self.load_engine(engine_path)
+        except Exception as e:
+            raise RuntimeError(f"Error loading TensorRT engine: {str(e)}")
+
         self.context = self.engine.create_execution_context()
         self.bindings = self.get_bindings(
             self.engine, self.context, self.device)
@@ -91,18 +97,21 @@ class TRTInference(object):
             if self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT:
                 names.append(name)
         return names
-    
+
     def run_torch(self, blob):
         for n in self.input_names:
             if blob[n].dtype is not self.bindings[n].data.dtype:
                 blob[n] = blob[n].to(dtype=self.bindings[n].data.dtype)
             if self.bindings[n].shape != blob[n].shape:
                 self.context.set_input_shape(n, blob[n].shape)
-                self.bindings[n] = self.bindings[n]._replace(shape=blob[n].shape)
+                self.bindings[n] = self.bindings[n]._replace(
+                    shape=blob[n].shape)
 
-            assert self.bindings[n].data.dtype == blob[n].dtype, '{} dtype mismatch'.format(n)
+            assert self.bindings[n].data.dtype == blob[n].dtype, '{} dtype mismatch'.format(
+                n)
 
-        self.bindings_addr.update({n: blob[n].data_ptr() for n in self.input_names})
+        self.bindings_addr.update(
+            {n: blob[n].data_ptr() for n in self.input_names})
         self.context.execute_v2(list(self.bindings_addr.values()))
         outputs = {n: self.bindings[n].data for n in self.output_names}
 
@@ -119,27 +128,56 @@ class TRTInference(object):
             torch.cuda.synchronize()
 
 
-def draw(images, labels, boxes, scores, thrh=0.4):
+def draw(images, labels, boxes, scores, thrh=0.4, target_class=9):
     for i, im in enumerate(images):
+
+        # Filtrar por umbral
         draw = ImageDraw.Draw(im)
         scr = scores[i]
         lab = labels[i][scr > thrh]
         box = boxes[i][scr > thrh]
         scrs = scr[scr > thrh]
 
+        # Filtrar por clase objetivo
+        target_indices = (lab == target_class)
+        lab = lab[target_indices]
+        box = box[target_indices]
+        scrs = scrs[target_indices]
+
         for j, b in enumerate(box):
-            draw.rectangle(list(b), outline='red')
+            draw.rectangle(list(b), outline=(0, 255, 0))  # RGB Green
+
+            # Calcular la posición y el tamaño del fondo del texto
+            text = f"BOTELLA ({lab[j].item()}) - {round(scrs[j].item(), 2)}"
+
+            # Usar textbbox para obtener el tamaño del texto
+            bbox = draw.textbbox((b[0], b[1]), text)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            padded_width = text_width + 2 * 5
+            padded_height = text_height + 5
+
+            # Dibujar el fondo verde detrás del texto
+            text_box_position = (b[0], b[1] - padded_height)
+            draw.rectangle(
+                [text_box_position, (b[0] + padded_width, b[1])],
+                fill=(0, 255, 0),  # Fondo verde
+            )
+
+            # Dibujar el texto sobre el fondo verde
             draw.text(
-                (b[0], b[1]),
-                text=f"{lab[j].item()} {round(scrs[j].item(), 2)}",
-                fill='blue',
+                text_box_position,
+                text=text,
+                fill='black',
+                align=""
             )
 
     return images
 
 
 def process_video(m, device):
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture("test-assets/video1.mp4")
 
     # Get video properties
     # fps = cap.get(cv2.CAP_PROP_FPS)
@@ -155,15 +193,23 @@ def process_video(m, device):
         T.ToTensor(),
     ])
 
+    fps_start_time = time.time()
+    frame_count = 0
+
     while cap.isOpened():
+        frame_count += 1
         ret, frame = cap.read()
         if not ret:
             break
 
+        if frame_count % 10 == 0:
+            fps = frame_count / (time.time() - fps_start_time)
+            print(f"FPS: {fps:.2f}")
+
         frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         w, h = frame_pil.size
-        orig_size = torch.tensor([w, h])[None].to("cuda:0")
+        orig_size = torch.tensor([w, h])[None].to(device)
 
         im_data = transforms(frame_pil)[None]
 
@@ -174,9 +220,19 @@ def process_video(m, device):
 
         output = m(blob)
 
+        # Extraer cajas, puntuaciones y etiquetas
+        boxes = output['boxes']
+        scores = output['scores']
+        labels = output['labels']
+
+        if boxes.numel() == 0:
+            continue
+
+        if scores.numel() == 0:
+            continue
+
         # Draw detections on the frame
-        result_images = draw([frame_pil], output['labels'],
-                             output['boxes'], output['scores'])
+        result_images = draw([frame_pil], labels, boxes, scores)
 
         # Convert back to OpenCV image
         frame = cv2.cvtColor(np.array(result_images[0]), cv2.COLOR_RGB2BGR)
